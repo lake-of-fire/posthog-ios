@@ -59,6 +59,13 @@ class RRWireframe {
             return RRWireframe.maskImage(image, maskableWidgets: maskableWidgets ?? [], scale: maskScale)
         }
 
+        /// The rect pass and WebP encode exactly as the upload runs them: the image that's encoded, and its base64 (nil
+        /// when encoding failed). nil when there's no image, or the rect pass couldn't render.
+        func encodeImage() -> (image: UIImage, base64: String?)? {
+            guard let image, let encoded = hasMaskableWidgets() ? maskImage() : image else { return nil }
+            return (encoded, encoded.toBase64())
+        }
+
         // Shared so tests can redact through the exact production path instead of reimplementing it.
         static func maskImage(_ image: UIImage, maskableWidgets: [CGRect], scale: CGFloat = 1) -> UIImage? {
             guard !maskableWidgets.isEmpty else { return nil }
@@ -113,20 +120,16 @@ class RRWireframe {
         }
 
         #if os(iOS)
-            if let image = image {
-                if hasMaskableWidgets() {
-                    if let maskedImage = maskImage() {
-                        base64 = maskedImage.toBase64()
-                    } else {
-                        // Renderer allocation can fail under memory pressure. Leave base64
-                        // unset and let the caller drop the frame — never the raw image.
-                        maskRenderFailed = true
-                    }
+            if image != nil {
+                if let encoded = encodeImage() {
+                    base64 = encoded.base64
                 } else {
-                    base64 = image.toBase64()
+                    // Renderer allocation can fail under memory pressure. Leave base64
+                    // unset and let the caller drop the frame — never the raw image.
+                    maskRenderFailed = true
                 }
 
-                self.image = nil
+                image = nil
                 maskableWidgets = nil
             }
         #endif
