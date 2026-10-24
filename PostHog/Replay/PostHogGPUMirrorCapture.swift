@@ -353,8 +353,9 @@
         /// video) are excluded: handing them to a second renderer stops the on-screen layer from updating.
         private static let shareablePrivateContentTypes: Set<String> = ["CAIOSurface", "CABackingStore"]
         /// Shareable contents that are Objective-C objects, so they have no CF type of their own: SwiftUI draws text on
-        /// Liquid Glass into a tinted image.
-        private static let shareablePrivateContentClasses: Set<String> = ["CATintedImage"]
+        /// Liquid Glass into a tinted image, and hands an `Image` layer its bitmap as a proxy wrapping one CGImage. Both
+        /// are replaced, not redrawn in place, when the content changes.
+        private static let shareablePrivateContentClasses: Set<String> = ["CATintedImage", "_SwiftUIProxyImage"]
         /// Core Foundation's own type IDs are small indexes into its class table. An Objective-C object reports
         /// whatever its `_cfTypeID` returns (IOSurface returns its class pointer), and `CFCopyTypeIDDescription` reads
         /// past the table and faults on an ID that size.

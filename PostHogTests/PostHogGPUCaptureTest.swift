@@ -3,6 +3,7 @@
     import IOSurface
     @testable import PostHog
     import QuartzCore
+    import SwiftUI
     import Testing
     import UIKit
 
@@ -1209,6 +1210,50 @@
             #expect(try !copyShares(NSObject(), in: mirror, window: window))
         }
 
+        /// A SwiftUI `Image(uiImage:)` filling the window, and the layer that shows it.
+        private func showSwiftUIImage(_ model: SwiftUIImageModel, in window: UIWindow) async throws -> CALayer {
+            window.rootViewController = UIHostingController(rootView: SwiftUIImageView(model: model))
+            window.layoutIfNeeded()
+            // SwiftUI sets the layer's contents on its next update.
+            try await Task.sleep(nanoseconds: 300_000_000)
+            return try #require(Self.layers(in: window.layer).first { NSStringFromClass(type(of: $0)).contains("ImageLayer") && $0.contents != nil })
+        }
+
+        private static func layers(in root: CALayer) -> [CALayer] {
+            [root] + (root.sublayers ?? []).flatMap(layers(in:))
+        }
+
+        private static func solidImage(_ color: UIColor) -> UIImage {
+            UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40)).image { context in
+                color.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 40, height: 40))
+            }
+        }
+
+        @Test("A SwiftUI image renders, and the next capture after it changes shows the new one")
+        func swiftUIImagesRender() async throws {
+            let mirror = try makeMirror()
+            // In an app host SwiftUI only updates a window that has a scene.
+            let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first.map(UIWindow.init(windowScene:)) ?? makeWindow()
+            window.frame = CGRect(x: 0, y: 0, width: 200, height: 300)
+            window.isHidden = false
+            defer { window.isHidden = true }
+            await prewarm(mirror, for: window)
+            let model = SwiftUIImageModel(Self.solidImage(.red))
+            let imageLayer = try await showSwiftUIImage(model, in: window)
+            let first = try #require(imageLayer.contents as AnyObject?)
+            // iOS 26 wraps the bitmap in an Objective-C proxy; earlier versions hand the layer the CGImage itself.
+            try #require(["_SwiftUIProxyImage", "CGImage"].contains(try Self.kind(of: first)))
+
+            #expect(try await Pixels(render(window, with: mirror).0)[100, 150] == .red)
+
+            model.image = Self.solidImage(.blue)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            // The on-screen layer takes the new image after a capture shared the old one.
+            #expect(try #require(imageLayer.contents as AnyObject?) !== first)
+            #expect(try await Pixels(render(window, with: mirror).0)[100, 150] == .blue)
+        }
+
         @Test("Contents whose CF type ID is an address, like IOSurface's, are dropped instead of described")
         func addressTypedContentsAreDropped() async throws {
             let mirror = try makeMirror()
@@ -1218,6 +1263,23 @@
             let contents = AddressTypedContents()
             try #require(CFGetTypeID(contents) > CFTypeID(UInt32.max))
             #expect(try !copyShares(contents, in: mirror, window: window))
+        }
+    }
+
+    private final class SwiftUIImageModel: ObservableObject {
+        @Published var image: UIImage
+
+        init(_ image: UIImage) {
+            self.image = image
+        }
+    }
+
+    private struct SwiftUIImageView: View {
+        @ObservedObject var model: SwiftUIImageModel
+
+        var body: some View {
+            Image(uiImage: model.image).resizable().frame(width: 100, height: 100)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
