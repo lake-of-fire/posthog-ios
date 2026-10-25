@@ -320,7 +320,7 @@
             #expect(pixels[100, 200].green < 120)
         }
 
-        @Test("Panel-sized glass (sheets, alerts) draws as a blurred, colour-matrixed backdrop; control-sized keeps the flat fill")
+        @Test("Panel-sized glass (sheets, alerts) draws as a blurred system material; control-sized keeps the flat fill")
         func panelGlassDrawsAsBackdropMaterial() async throws {
             let mirror = try makeMirror()
             let window = makeWindow(background: .green)
@@ -331,9 +331,9 @@
             window.layer.addSublayer(try makeGlass(frame: CGRect(x: 20, y: 200, width: 160, height: 60), cornerRadius: 30, filter: "glassBackground"))
 
             let pixels = try await Pixels(render(window, with: mirror).0)
-            // The material maps green to about (118, 255, 127); 0.6 white over green would be (153, 255, 153).
+            // The material maps green to about (141, 255, 141); 0.6 white over green would be (153, 255, 153).
             let panel = pixels[100, 85]
-            #expect((100 ... 135).contains(panel.red) && panel.green > 235 && (110 ... 140).contains(panel.blue), "\(panel)")
+            #expect((132 ... 148).contains(panel.red) && panel.green > 235 && (132 ... 148).contains(panel.blue), "\(panel)")
             // Rounded like the shape.
             #expect(pixels[11, 11] == RGBA(red: 0, green: 255, blue: 0, alpha: 255))
             // 0.85 white over green.
