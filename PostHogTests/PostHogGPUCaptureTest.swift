@@ -1053,6 +1053,24 @@
             #expect(rects.contains(lens ? window.layer.convert(portal.bounds, from: portal) : source.frame))
         }
 
+        @Test("A huge Metal layer's placeholder bitmap is capped instead of sized to the layer")
+        func hugeMetalLayerPlaceholderIsCapped() async throws {
+            let mirror = try makeMirror()
+            let window = makeWindow(background: .red)
+            await prewarm(mirror, for: window)
+
+            let metal = MetalView(frame: CGRect(x: -5000, y: -5000, width: 10000, height: 10000))
+            window.addSubview(metal)
+            window.layoutIfNeeded()
+
+            let frame = try #require(mirror.build(window: window, scale: 1))
+            defer { frame.release() }
+            let images = mirror.copiesForTesting.allObjects.compactMap { $0.contents as AnyObject? }
+                .filter { CFGetTypeID($0) == CGImage.typeID }.map { $0 as! CGImage }
+            let placeholder = try #require(images.first)
+            #expect(max(placeholder.width, placeholder.height) <= 1024, "\(placeholder.width) x \(placeholder.height)")
+        }
+
         // MARK: - Lifecycle
 
         private func makeSut(gpuCapture: Bool = true) throws -> (PostHogSDK, PostHogReplayIntegration, ReplaySnapshots) {
