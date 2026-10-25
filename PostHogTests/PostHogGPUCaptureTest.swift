@@ -968,6 +968,29 @@
             #expect(try maskedPixels(image, rects).points(where: Self.isMagenta).isEmpty)
         }
 
+        @Test("A portal inside another portal's source draws nothing through the outer portal")
+        func nestedPortalIsNotDrawnThroughOuterPortal() async throws {
+            let mirror = try makeMirror()
+            let window = makeWindow()
+            await prewarm(mirror, for: window)
+
+            let secret = noCaptureView(CGRect(x: 20, y: 240, width: 60, height: 40))
+            window.addSubview(secret)
+            let outerSource = UIView(frame: CGRect(x: 20, y: 20, width: 160, height: 80))
+            outerSource.backgroundColor = .blue
+            window.addSubview(outerSource)
+            outerSource.layer.addSublayer(try makePortal(showing: secret.layer, frame: CGRect(x: 10, y: 10, width: 60, height: 40),
+                                                         matchesPosition: false, matchesTransform: false))
+            window.layer.addSublayer(try makePortal(showing: outerSource.layer, frame: CGRect(x: 20, y: 120, width: 160, height: 80),
+                                                    matchesPosition: false, matchesTransform: false))
+
+            let (image, rects) = try await render(window, with: mirror)
+            let pixels = try Pixels(image)
+            #expect(pixels[150, 160] == .blue)
+            #expect(count(pixels, in: CGRect(x: 30, y: 130, width: 60, height: 40), where: Self.isMagenta) == 0)
+            #expect(try maskedPixels(image, rects).points(where: Self.isMagenta).isEmpty)
+        }
+
         // MARK: - Lifecycle
 
         private func makeSut(gpuCapture: Bool = true) throws -> (PostHogSDK, PostHogReplayIntegration, ReplaySnapshots) {

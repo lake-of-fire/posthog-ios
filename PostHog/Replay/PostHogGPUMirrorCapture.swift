@@ -608,11 +608,12 @@
         /// (`PostHogPortalSource.placement`). Its pixels land either where the source sits, where the mask walk
         /// measures the source's views, or on the portal, where `Frame.portalSources` has the walk move the source's
         /// masks with the same map. The walk visits each source again without culling, since a source can be clipped
-        /// or culled where it sits yet still show through the portal. Any other portal stays out.
+        /// or culled where it sits yet still show through the portal. Any other portal stays out, as does a portal
+        /// inside a source being drawn through another: its masks would only be found where the inner portal sits.
         private func portalContent(_ portal: CALayer, walk: inout Walk) -> CALayer? {
-            guard let source = portal.value(forKey: "sourceLayer") as? CALayer,
+            guard walk.portalsInProgress.isEmpty,
+                  let source = portal.value(forKey: "sourceLayer") as? CALayer,
                   let view = source.delegate as? UIView,
-                  !walk.portalsInProgress.contains(ObjectIdentifier(source)),
                   isLayer(source, inside: walk.root),
                   let placement = PostHogPortalSource.placement(of: portal, source: source, root: walk.root)
             else { return nil }
