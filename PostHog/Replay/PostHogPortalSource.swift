@@ -43,8 +43,19 @@
             }
         }
 
-        /// Where an `.atPortal` portal shows `source`, for the mask walk. `root` is the window's layer.
+        /// Where an `.atPortal` portal shows `source`, for the mask walk. `root` is the window's layer. Measured on the
+        /// presentation tree, as the mirror draws it and the mask rects are measured (mid-animation the model layers
+        /// already sit at the destination), unless one of the layers can't be asked for its presentation copy.
         static func elsewhere(source: CALayer, portal: CALayer, root: CALayer) -> Elsewhere {
+            let layers = [source, portal, root]
+            guard layers.allSatisfy({ PostHogGPUMirrorCapture.isPresentationSafe(type(of: $0)) }) else {
+                return measure(source: source, portal: portal, root: root)
+            }
+            let presented = layers.map { $0.presentation() ?? $0 }
+            return measure(source: presented[0], portal: presented[1], root: presented[2])
+        }
+
+        private static func measure(source: CALayer, portal: CALayer, root: CALayer) -> Elsewhere {
             let offset = CGPoint(x: portal.bounds.minX - source.bounds.minX, y: portal.bounds.minY - source.bounds.minY)
             func move(_ point: CGPoint) -> CGPoint {
                 let inSource = source.convert(point, from: root)

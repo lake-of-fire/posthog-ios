@@ -929,6 +929,45 @@
             #expect(image == nil)
         }
 
+        @Test("A lens portal or its source mid-animation has its masks where the pixels are drawn", arguments: [true, false])
+        func animatingLensPortalMasksFollowPresentation(animatePortal: Bool) async throws {
+            let mirror = try makeMirror()
+            let window = makeWindow()
+            await prewarm(mirror, for: window)
+
+            let source = UIView(frame: CGRect(x: 20, y: 20, width: 120, height: 60))
+            let field = noCaptureView(CGRect(x: 10, y: 10, width: 100, height: 40), color: .clear)
+            let secret = UIView(frame: field.bounds.insetBy(dx: 5, dy: 5))
+            secret.backgroundColor = .magenta
+            field.addSubview(secret)
+            source.addSubview(field)
+            window.addSubview(source)
+            let portal = try makeLensPortal(showing: source, frame: CGRect(x: 40, y: 180, width: 120, height: 60))
+            window.layer.addSublayer(portal)
+
+            // Held at its start for the whole capture, while the model already sits at the destination.
+            let moving = animatePortal ? portal : source.layer
+            let start = moving.position
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            moving.position.y += 50
+            CATransaction.commit()
+            let animation = CABasicAnimation(keyPath: "position")
+            animation.fromValue = NSValue(cgPoint: start)
+            animation.toValue = NSValue(cgPoint: start)
+            animation.duration = 1000
+            animation.beginTime = moving.convertTime(CACurrentMediaTime(), from: nil) - 1
+            moving.add(animation, forKey: "position")
+            CATransaction.flush()
+            try await Task.sleep(nanoseconds: 50_000_000)
+            #expect(moving.presentation()?.position == start)
+
+            let (image, rects) = try await render(window, with: mirror)
+            let pixels = try Pixels(image)
+            #expect(count(pixels, in: CGRect(x: 55, y: 195, width: 90, height: 30), where: Self.isMagenta) > 90 * 30 * 9 / 10)
+            #expect(try maskedPixels(image, rects).points(where: Self.isMagenta).isEmpty)
+        }
+
         // MARK: - Lifecycle
 
         private func makeSut(gpuCapture: Bool = true) throws -> (PostHogSDK, PostHogReplayIntegration, ReplaySnapshots) {

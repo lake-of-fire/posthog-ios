@@ -925,7 +925,7 @@
         /// `presentation()` instantiates the layer's class through `initWithLayer:`; a Swift subclass that doesn't
         /// override `init(layer:)` traps there. CALayer's own implementation, and any that lives in a system image
         /// (found with `dladdr`, since the app's own subclasses are the ones that can trap), are trusted.
-        private static func isPresentationSafe(_ cls: AnyClass) -> Bool {
+        static func isPresentationSafe(_ cls: AnyClass) -> Bool {
             let selector = NSSelectorFromString("initWithLayer:")
             let implementation = class_getMethodImplementation(cls, selector)
             if implementation == class_getMethodImplementation(CALayer.self, selector) { return true }
