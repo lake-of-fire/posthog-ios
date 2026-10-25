@@ -107,6 +107,9 @@
             let scale: CGFloat
             let wrapper = CALayer()
             let pixelBounds: CGRect
+            /// The clear the latest `render` encoded: the only part of a render whose result can be checked, since
+            /// CARenderer doesn't expose its own command buffer.
+            private var lastClear: MTLCommandBuffer?
             /// The texture's layout, BGRA premultiplied.
             private static let bgraBitmapInfo = CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
 
@@ -135,7 +138,8 @@
 
             /// Encodes a render of the wrapper's committed tree on `queue`, without waiting for it.
             func render() -> Bool {
-                guard clear() else { return false }
+                guard let clear = clear() else { return false }
+                lastClear = clear
                 renderer.beginFrame(atTime: CACurrentMediaTime(), timeStamp: nil)
                 renderer.addUpdate(pixelBounds)
                 renderer.render()
@@ -149,9 +153,11 @@
                     completionQueue.async { completion(nil) }
                     return
                 }
+                let clear = lastClear
                 fence.addCompletedHandler { [self] buffer in
+                    let failed = buffer.error != nil || clear?.status != .completed
                     completionQueue.async {
-                        completion(buffer.error == nil ? self.copyPixels() : nil)
+                        completion(failed ? nil : self.copyPixels())
                     }
                 }
                 fence.commit()
@@ -176,16 +182,16 @@
                 CATransaction.flush()
             }
 
-            private func clear() -> Bool {
+            private func clear() -> MTLCommandBuffer? {
                 let pass = MTLRenderPassDescriptor()
                 pass.colorAttachments[0].texture = texture
                 pass.colorAttachments[0].loadAction = .clear
                 pass.colorAttachments[0].storeAction = .store
                 pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-                guard let buffer = queue.makeCommandBuffer(), let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else { return false }
+                guard let buffer = queue.makeCommandBuffer(), let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
                 encoder.endEncoding()
                 buffer.commit()
-                return true
+                return buffer
             }
 
             private func copyPixels() -> CGImage? {
@@ -195,8 +201,22 @@
                     let data = context.data
                 else { return nil }
                 texture.getBytes(data, bytesPerRow: context.bytesPerRow, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+                // A window paints at least its background, so a frame with every pixel transparent is a render that
+                // didn't happen. The scan stops at the first painted pixel, which is usually the first one.
+                guard !Self.isBlank(data, width: width, height: height, bytesPerRow: context.bytesPerRow) else { return nil }
                 Self.flipRows(data, height: height, bytesPerRow: context.bytesPerRow)
                 return context.makeImage()
+            }
+
+            private static func isBlank(_ data: UnsafeMutableRawPointer, width: Int, height: Int, bytesPerRow: Int) -> Bool {
+                for row in 0 ..< height {
+                    let pixels = (data + row * bytesPerRow).assumingMemoryBound(to: UInt32.self)
+                    // BGRA little-endian: alpha is the top byte.
+                    for column in 0 ..< width where pixels[column] & 0xFF00_0000 != 0 {
+                        return false
+                    }
+                }
+                return true
             }
 
             private static func flipRows(_ data: UnsafeMutableRawPointer, height: Int, bytesPerRow: Int) {

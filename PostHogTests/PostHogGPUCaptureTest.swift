@@ -912,6 +912,23 @@
             #expect(pixels[100, 70] == .white)
         }
 
+        @Test("A frame that renders nothing at all reads back as a failure, so the capture falls back")
+        func blankFrameReadsBackAsFailure() async throws {
+            let mirror = try makeMirror()
+            let window = makeWindow(background: .clear)
+            await prewarm(mirror, for: window)
+
+            window.layoutIfNeeded()
+            let frame = try #require(mirror.build(window: window, scale: 1))
+            frame.freeze()
+            #expect(frame.encode())
+            let image = await withCheckedContinuation { continuation in
+                frame.readback(on: .global()) { continuation.resume(returning: $0) }
+            }
+            frame.release()
+            #expect(image == nil)
+        }
+
         // MARK: - Lifecycle
 
         private func makeSut(gpuCapture: Bool = true) throws -> (PostHogSDK, PostHogReplayIntegration, ReplaySnapshots) {
