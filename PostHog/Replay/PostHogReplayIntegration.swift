@@ -1197,30 +1197,24 @@
                 return nil
             }
 
+            // A portal draws its source even where the source's own ancestors hide it, so the reporters under each
+            // source are collected again, past those ancestors.
+            var reporters = masked.regions
+            var unsettledSources = Set<ObjectIdentifier>()
+            for source in portalSources {
+                let drawn = PostHogSessionReplayMaskRegistry.shared.maskedRects(drawnWith: source.view, in: window)
+                if drawn.hasUnsettledReporters { unsettledSources.insert(ObjectIdentifier(source.view)) }
+                reporters += drawn.regions.filter { region in !reporters.contains { $0.owner == region.owner } }
+            }
+
             var maskableWidgets: [MaskedRegion] = []
             findMaskableWidgets(under: cover, in: window, &maskableWidgets, culledLayers)
             for source in portalSources {
-                maskableWidgets += maskedRegions(shownThrough: source, in: window, reporters: masked.regions)
+                maskableWidgets += maskedRegions(shownThrough: source, in: window, reporters: reporters,
+                                                 hasUnsettledReporter: unsettledSources.contains(ObjectIdentifier(source.view)))
             }
-            maskableWidgets.append(contentsOf: masked.regions)
+            maskableWidgets.append(contentsOf: reporters)
             return maskableWidgets
-        }
-
-        /// The masks under a portal's source where it sits and, for a portal that shows it elsewhere, there too: moved
-        /// with the map its pixels were placed with, or the whole portal when that map is missing or a `postHogMask()`
-        /// reporter sits under the source.
-        private func maskedRegions(shownThrough source: PostHogPortalSource, in window: UIWindow, reporters: [MaskedRegion]) -> [MaskedRegion] {
-            var regions: [MaskedRegion] = []
-            findMaskableWidgets(under: source.view, in: window, &regions, [])
-            guard let elsewhere = source.elsewhere else { return regions }
-            let hasReporter = reporters.contains { ($0.object as? UIView)?.isDescendant(of: source.view) == true }
-            if let map = elsewhere.map, !hasReporter {
-                return regions + regions.map { MaskedRegion($0.object, rect: $0.rect.applying(map)) }
-            }
-            if hasReporter || !regions.isEmpty {
-                regions.append(MaskedRegion(source.view, rect: elsewhere.portalRect))
-            }
-            return regions
         }
 
         func collectMaskableRects(in window: UIWindow, culledLayers: Culled = [], portalSources: [PostHogPortalSource] = []) -> [CGRect]? {
@@ -1794,6 +1788,33 @@
                     startRecording()
                 }
             }
+        }
+    }
+
+    // MARK: - Portals
+
+    extension PostHogReplayIntegration {
+        /// The masks under a portal's source where it sits and, for a portal that shows it elsewhere, there too: moved
+        /// with the map its pixels were placed with, or the whole portal when that map is missing or a `postHogMask()`
+        /// reporter sits under the source. A reporter under the source that hasn't been laid out masks all of it
+        /// instead of skipping the frame: under an ancestor that hides it, it may never be laid out.
+        private func maskedRegions(shownThrough source: PostHogPortalSource, in window: UIWindow, reporters: [MaskedRegion],
+                                   hasUnsettledReporter: Bool) -> [MaskedRegion]
+        {
+            var regions: [MaskedRegion] = []
+            findMaskableWidgets(under: source.view, in: window, &regions, [])
+            if hasUnsettledReporter {
+                regions.append(MaskedRegion(source.view, in: window))
+            }
+            guard let elsewhere = source.elsewhere else { return regions }
+            let hasReporter = hasUnsettledReporter || reporters.contains { ($0.object as? UIView)?.isDescendant(of: source.view) == true }
+            if let map = elsewhere.map, !hasReporter {
+                return regions + regions.map { MaskedRegion($0.object, rect: $0.rect.applying(map)) }
+            }
+            if hasReporter || !regions.isEmpty {
+                regions.append(MaskedRegion(source.view, rect: elsewhere.portalRect))
+            }
+            return regions
         }
     }
 
