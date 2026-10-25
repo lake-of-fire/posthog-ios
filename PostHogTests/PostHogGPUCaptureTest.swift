@@ -887,6 +887,31 @@
             #expect(grey > Int(region.width * region.height) * 8 / 10)
         }
 
+        @Test("A layer whose mask is hidden or transparent draws nothing, as on screen", arguments: [true, false])
+        func layerWithInvisibleMaskIsNotDrawn(hidden: Bool) async throws {
+            let mirror = try makeMirror()
+            let window = makeWindow()
+            await prewarm(mirror, for: window)
+
+            let layer = CALayer()
+            layer.frame = CGRect(x: 20, y: 20, width: 160, height: 100)
+            layer.backgroundColor = UIColor.magenta.cgColor
+            let mask = CALayer()
+            mask.frame = layer.bounds
+            mask.backgroundColor = UIColor.black.cgColor
+            if hidden {
+                mask.isHidden = true
+            } else {
+                mask.opacity = 0
+            }
+            layer.mask = mask
+            window.layer.addSublayer(layer)
+
+            let pixels = try await Pixels(render(window, with: mirror).0)
+            #expect(pixels.points(where: Self.isMagenta).isEmpty)
+            #expect(pixels[100, 70] == .white)
+        }
+
         // MARK: - Lifecycle
 
         private func makeSut(gpuCapture: Bool = true) throws -> (PostHogSDK, PostHogReplayIntegration, ReplaySnapshots) {

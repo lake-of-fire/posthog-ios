@@ -664,8 +664,10 @@
             }
 
             if let mask = source.mask {
-                // Masks are never culled: a missing mask would show more of the layer, not less.
+                // A mask that renders nothing (hidden, transparent) shows nothing of the layer. The copy is hidden
+                // rather than left out, since `walk.viewCopies` may already hold it.
                 copy.mask = mirror(mask, parent: .unknown, walk: &walk)
+                if copy.mask == nil { copy.isHidden = true }
             }
             return copy
         }
