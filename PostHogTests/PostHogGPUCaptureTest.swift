@@ -1324,6 +1324,66 @@
             #expect(live < perCapture, "\(live) mirror layers alive after \(captures) captures of \(perCapture)")
         }
 
+        @Test("A memory warning while GPU capture is configured frees the cached renderers")
+        func memoryWarningPurgesRenderers() async throws {
+            let mirror = try makeMirror()
+            let (sut, integration, _) = try makeSut()
+            integration.gpuMirror = mirror
+            defer { sut.close() }
+            let window = makeWindow()
+            await prewarm(mirror, for: window)
+            #expect(!mirror.needsPrewarm(for: window.bounds.size, scale: 1))
+
+            NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+            #expect(mirror.needsPrewarm(for: window.bounds.size, scale: 1))
+        }
+
+        @Test("Uninstalling frees the cached renderers, and later memory warnings are no longer observed")
+        func uninstallPurgesRenderers() async throws {
+            let mirror = try makeMirror()
+            let (sut, integration, _) = try makeSut()
+            integration.gpuMirror = mirror
+            let window = makeWindow()
+            await prewarm(mirror, for: window)
+
+            sut.close()
+            #expect(mirror.needsPrewarm(for: window.bounds.size, scale: 1))
+
+            await prewarm(mirror, for: window)
+            NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+            #expect(!mirror.needsPrewarm(for: window.bounds.size, scale: 1))
+        }
+
+        @Test("Purging frees the cached renderers, so the next capture at that size builds its renderer again")
+        func purgeFreesRenderers() async throws {
+            let mirror = try makeMirror()
+            let window = makeWindow()
+            await prewarm(mirror, for: window)
+            #expect(!mirror.needsPrewarm(for: window.bounds.size, scale: 1))
+
+            mirror.purge()
+            #expect(mirror.needsPrewarm(for: window.bounds.size, scale: 1))
+            let (image, _) = try await render(window, with: mirror)
+            #expect(try Pixels(image)[100, 150] == .white)
+        }
+
+        @Test("Purging while a frame is in flight leaves that frame's renderer to finish it")
+        func purgeDuringFrameKeepsItsRenderer() async throws {
+            let mirror = try makeMirror()
+            let window = makeWindow(background: .blue)
+            await prewarm(mirror, for: window)
+
+            let frame = try #require(mirror.build(window: window, scale: 1))
+            frame.freeze()
+            mirror.purge()
+            #expect(frame.encode())
+            let image = await withCheckedContinuation { continuation in
+                frame.readback(on: .global()) { continuation.resume(returning: $0) }
+            }
+            frame.release()
+            #expect(try Pixels(#require(image))[100, 150] == .blue)
+        }
+
         // MARK: - Routing
 
         @Test("GPU capture is used only when its flag is on, and wins over background capture", arguments: [

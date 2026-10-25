@@ -55,6 +55,8 @@
         #if canImport(Metal)
             /// Main thread only. Tests swap in their own instance.
             lazy var gpuMirror = PostHogGPUMirrorCapture.shared
+            /// Set while installed with GPU capture configured.
+            private var memoryWarningObserver: NSObjectProtocol?
         #endif
 
         private let eventTriggersLock = NSLock()
@@ -214,6 +216,7 @@
                 eventCapturedToken = postHog.onEventCaptured.subscribe { [weak self] event in
                     self?.handleEventCaptured(event: event.event)
                 }
+                observeMemoryWarnings(postHog)
 
                 start()
             }
@@ -226,6 +229,7 @@
                 remoteConfigLoadedToken = nil
                 featureFlagsLoadedToken = nil
                 eventCapturedToken = nil
+                releaseGPUCapture()
                 self.postHog = nil
                 statusNotifyLock.withLock { lastNotifiedStatusKey = nil }
 
@@ -2123,6 +2127,29 @@
                 config?.sessionReplayConfig.screenshotPixelScale(nativeScale: window.screen.scale) ?? 1
             }
 
+            /// Any thread. GPU capture's cached renderers are freed on memory warnings, not when recording stops: a new
+            /// session would only build them again.
+            func observeMemoryWarnings(_ postHog: PostHogSDK) {
+                guard Self.screenshotCapturePath(postHog.config.sessionReplayConfig) == .gpu else { return }
+                memoryWarningObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
+                                                                               object: nil, queue: .main)
+                { [weak self] _ in
+                    self?.gpuMirror?.purge()
+                }
+            }
+
+            /// Any thread. Stops observing memory warnings and frees GPU capture's cached renderers, on main.
+            func releaseGPUCapture() {
+                guard let observer = memoryWarningObserver else { return }
+                NotificationCenter.default.removeObserver(observer)
+                memoryWarningObserver = nil
+                if Thread.isMainThread {
+                    gpuMirror?.purge()
+                } else {
+                    DispatchQueue.main.async { self.gpuMirror?.purge() }
+                }
+            }
+
             /// Any thread. Gets the GPU capture's renderer ready before the first capture asks for it.
             func prewarmGPUCapture(_ postHog: PostHogSDK) {
                 let replayConfig = postHog.config.sessionReplayConfig
@@ -2262,6 +2289,10 @@
             }
 
             func prewarmGPUCapture(_: PostHogSDK) {}
+
+            func observeMemoryWarnings(_: PostHogSDK) {}
+
+            func releaseGPUCapture() {}
         }
     #endif
 

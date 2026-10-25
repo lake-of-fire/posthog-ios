@@ -504,6 +504,14 @@
             }
         #endif
 
+        /// Main thread. Frees the cached renderers, their textures and the placeholders; the next capture builds what it
+        /// needs again. A frame in flight holds its own renderer until it's released, so this is safe at any point.
+        func purge() {
+            targets.removeAll()
+            failedKeys.removeAll()
+            placeholders.removeAll()
+        }
+
         // MARK: - Targets
 
         private func makeAndInstallTarget(_ key: TargetKey) -> Target? {
