@@ -34,6 +34,8 @@ final class PostHogEventsTransport: @unchecked Sendable {
     }
 
     func close() { session.invalidateAndCancel() }
+
+    deinit { session.invalidateAndCancel() }
 }
 
 private final class PostHogEventsRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

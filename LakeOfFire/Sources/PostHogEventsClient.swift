@@ -12,8 +12,25 @@ public final class PostHogEventsClient: @unchecked Sendable {
     private static let ownershipLock = NSLock()
     private static var ownedDirectories = Set<URL>()
     private let stateLock = NSLock()
+    private let deliveryGate: PostHogEventsDeliveryGate
+    private final class DirectoryOwnership {
+        let directory: URL
+        private var ownsDirectory = false
+        init(_ directory: URL) throws {
+            self.directory = directory
+            let claimed = ownershipLock.withLock { ownedDirectories.insert(directory).inserted }
+            guard claimed else { throw PostHogEventsError.storageAlreadyInUse }
+            ownsDirectory = true
+        }
+        deinit {
+            if ownsDirectory { ownershipLock.withLock { _ = ownedDirectories.remove(directory) } }
+        }
+    }
+
     private let directory: URL
-    private let queue: PostHogQueue<PostHogEvent>
+    private let directoryOwnership: DirectoryOwnership
+    private let queueLifetime = PostHogEventsQueueLifetime()
+    private var queue: PostHogQueue<PostHogEvent>?
     private let transport: PostHogEventsTransport?
     private var closed = false
     private var sessionID = UUID.v7String()
@@ -37,8 +54,10 @@ public final class PostHogEventsClient: @unchecked Sendable {
         self.directory = directory
         self.transport = transport
         self.clock = clock
-        let claimed = Self.ownershipLock.withLock { Self.ownedDirectories.insert(directory).inserted }
-        guard claimed else { throw PostHogEventsError.storageAlreadyInUse }
+        let gate = PostHogEventsDeliveryGate()
+        self.deliveryGate = gate
+        let ownership = try DirectoryOwnership(directory)
+        self.directoryOwnership = ownership
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let identityURL = directory.appendingPathComponent("identity.json")
@@ -70,17 +89,25 @@ public final class PostHogEventsClient: @unchecked Sendable {
                 maxQueueSize: { _ in configuration.maxQueueSize }, flushIntervalSeconds: { _ in configuration.flushInterval },
                 rateCapMax: { _ in 0 }, rateCapWindowSeconds: { _ in 0 },
                 encode: { toJSONData($0.toJSON()) }, decode: { PostHogEvent.fromJSON($0) }, describe: { _ in "event" },
-                send: send, isRetriableStatusCode: { $0 == 408 || $0 == 429 || (500...599).contains($0) || (300...399).contains($0) }
+                send: { records, completion in
+                    gate.send(records, using: send, completion: completion)
+                }, isRetriableStatusCode: { $0 == 408 || $0 == 429 || (500...599).contains($0) || (300...399).contains($0) }
             )
 #if os(watchOS)
-            queue = PostHogQueue(config, storage, endpoint)
+            let queue = PostHogEventsQueue(config, storage, endpoint)
 #else
-            queue = PostHogQueue(config, storage, endpoint, nil)
+            let queue = PostHogEventsQueue(config, storage, endpoint, nil)
 #endif
+            let lifetime = queueLifetime
+            queue.onDeinit = {
+                // Retain directory ownership until all queue work is gone, even
+                // if the client itself has already been released.
+                withExtendedLifetime(ownership) { lifetime.finish() }
+            }
+            self.queue = queue
             // URLSession errors drive retry. No reachability observer or background task is installed.
             queue.start(disableReachabilityForTesting: true, disableQueueTimerForTesting: !startTimer)
         } catch {
-            Self.ownershipLock.withLock { _ = Self.ownedDirectories.remove(directory) }
             throw error
         }
     }
@@ -106,12 +133,12 @@ public final class PostHogEventsClient: @unchecked Sendable {
             let record = PostHogEvent(event: event, distinctId: anonymousID, properties: properties, timestamp: date)
             guard let data = toJSONData(record.toJSON()), data.count <= 16_384,
                   let frozen = PostHogEvent.fromJSON(data) else { return false }
-            return queue.add(frozen)
+            return queue?.add(frozen) ?? false
         }
     }
 
     /// Requests a flush. Returns immediately; failed delivery stays on disk for a later retry.
-    public func flush() { stateLock.withLock { if !closed { queue.flush() } } }
+    public func flush() { stateLock.withLock { if !closed { queue?.flush() } } }
 
     /// Stops timers and uploads. Pending events remain on disk. The directory stays
     /// reserved until this instance deinitializes, preventing overlap with a retiring upload.
@@ -119,16 +146,44 @@ public final class PostHogEventsClient: @unchecked Sendable {
         stateLock.withLock {
             guard !closed else { return }
             closed = true
-            queue.stop()
+            deliveryGate.close()
+            queue?.stop()
             transport?.close()
         }
     }
 
-    deinit {
-        queue.stop()
-        transport?.close()
-        Self.ownershipLock.withLock { _ = Self.ownedDirectories.remove(directory) }
+    /// Stops capture/delivery, joins queued work, then deletes this client's owned
+    /// identity and pending events. Does not send a final flush or erase server data.
+    /// Release this closed instance before opening a replacement in the same directory.
+    public func closeAndDeleteStorage() async throws {
+        close()
+        stateLock.withLock { queue = nil }
+        // Queued flush closures retain the old queue until their disk reads
+        // finish. Its destruction joins that work without changing upstream.
+        await queueLifetime.wait()
+        try Self.deleteDirectoryIfPresent(directory)
     }
 
-    var pendingEventCount: Int { queue.depth }
+    /// Deletes a dedicated queue without constructing a client or starting uploads.
+    /// Refuses to erase storage owned by a live client in this process.
+    public static func deleteStorage(configuration: PostHogEventsConfiguration) throws {
+        let directory = configuration.storageDirectory
+        try ownershipLock.withLock {
+            guard !ownedDirectories.contains(directory) else { throw PostHogEventsError.storageAlreadyInUse }
+            try deleteDirectoryIfPresent(directory)
+        }
+    }
+
+    private static func deleteDirectoryIfPresent(_ directory: URL) throws {
+        do { try FileManager.default.removeItem(at: directory) }
+        catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {}
+    }
+
+    deinit {
+        deliveryGate.close()
+        queue?.stop()
+        transport?.close()
+    }
+
+    var pendingEventCount: Int { stateLock.withLock { queue?.depth ?? 0 } }
 }

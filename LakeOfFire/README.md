@@ -49,7 +49,15 @@ for different tokens **and hosts**. The storage identity validates both; a
 mistaken reuse throws rather than uploading another project's queue. Multiple
 processes/app extensions must use separate directories. `close()` stops timers
 and uploads; the live instance continues to reserve its directory until deinit.
-Pending records remain on disk. A new installation can use
+Pending records remain on disk. For local withdrawal/deletion, call
+`try await analytics.closeAndDeleteStorage()` instead. It closes the delivery
+gate, cancels transport, joins retiring queue work and removes owned queue/identity
+storage without a final flush. Late responses cannot acknowledge or recreate
+storage. Release the closed client before opening a replacement.
+`PostHogEventsClient.deleteStorage(configuration:)` removes unopened storage
+without starting a client and refuses a directory owned by a live client.
+Neither method deletes events already received by a server.
+A new installation can use
 `bootstrapAnonymousID` to preserve a previously persisted UUID; existing fork
 identity always wins over the bootstrap value.
 
@@ -123,7 +131,11 @@ This subset follows the wire shape and retained queue behavior described in
 PostHog's [capture](https://github.com/PostHog/sdk-specs/blob/main/openspec/specs/capture/spec.md),
 [retry queue](https://github.com/PostHog/sdk-specs/blob/main/openspec/specs/retry-queue/spec.md)
 and [HTTP client](https://github.com/PostHog/sdk-specs/blob/main/openspec/specs/http-client/spec.md)
-specifications. It intentionally omits identification, profiles, registered
+specifications, with the additional local-erasure barrier described above.
+Unlike upstream shutdown, erasure never attempts a final flush. The app owns
+persisted opt-in policy (see the upstream opt-in/opt-out specification); the
+fork exposes storage erasure rather than adding a second consent setting.
+It intentionally omits identification, profiles, registered
 properties, automatic context, reachability monitoring and optional features.
 It does not claim full PostHog client-SDK conformance. It relies on URLSession
 failures and the upstream retry timer when connectivity is unavailable.

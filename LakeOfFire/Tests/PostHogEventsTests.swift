@@ -153,6 +153,58 @@ struct PostHogEventsTests {
         try await wait { client.pendingEventCount == 0 }
     }
 
+    @Test func purgeJoinsQueuedWorkAndRejectsLateResponses() async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sent = SentBatches()
+        var client: PostHogEventsClient? = try PostHogEventsClient(configuration: configuration(dir), send: { events, completion in sent.append(events, completion) })
+        let oldID = client!.anonymousID
+        #expect(client!.capture("before_withdrawal"))
+        client!.flush()
+        try await wait { sent.count == 1 }
+        for _ in 0..<100 { client!.flush() }
+        try await client!.closeAndDeleteStorage()
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+        #expect(!client!.capture("after_withdrawal"))
+        let count = sent.count
+        sent.complete(0, status: 200)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        #expect(sent.count == count)
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+        client = nil
+        let replacement = try PostHogEventsClient(configuration: configuration(dir), send: { _, _ in })
+        #expect(replacement.anonymousID != oldID)
+        #expect(replacement.pendingEventCount == 0)
+        #expect(replacement.capture("after_reenable"))
+        #expect(try persistedEvents(dir).count == 1)
+    }
+
+    @Test func unopenedQueueCanBeErasedWithoutStartingDelivery() async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let config = try configuration(dir)
+        var client: PostHogEventsClient? = try PostHogEventsClient(configuration: config, send: { _, _ in })
+        #expect(client!.capture("offline"))
+        #expect(throws: PostHogEventsError.self) { try PostHogEventsClient.deleteStorage(configuration: config) }
+        client = nil
+        try PostHogEventsClient.deleteStorage(configuration: config)
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+        try PostHogEventsClient.deleteStorage(configuration: config)
+    }
+
+    @Test func concurrentCapturesCannotSurviveCompletedPurge() async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let client = try PostHogEventsClient(configuration: configuration(dir), send: { _, _ in })
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { for _ in 0..<100 { client.capture("racing") } }
+            group.addTask { try? await client.closeAndDeleteStorage() }
+        }
+        try await client.closeAndDeleteStorage()
+        #expect(!client.capture("closed"))
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+    }
+
     @Test func sessionRotatesOnlyAfterInactivityOrClockRollback() throws {
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }
