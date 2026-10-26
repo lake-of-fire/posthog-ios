@@ -1,0 +1,22 @@
+name: Lake of Fire events-only package
+on:
+  push:
+    branches: [lake-of-fire/events-only]
+  pull_request:
+    branches: [lake-of-fire/events-only]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install log parser
+        run: brew install xcsift
+      - name: Audit compiled source boundary
+        run: make -f LakeOfFire/Makefile audit
+      - name: Test real queue and mocked transport
+        run: make -f LakeOfFire/Makefile test SCRATCH="$RUNNER_TEMP/PostHogEvents"
+      - name: Release build
+        run: make -f LakeOfFire/Makefile build SCRATCH="$RUNNER_TEMP/PostHogEvents"

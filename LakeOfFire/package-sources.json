@@ -1,0 +1,22 @@
+[
+  "PostHog/PostHogQueue.swift",
+  "PostHog/PostHogFileBackedQueue.swift",
+  "PostHog/PostHogLegacyQueue.swift",
+  "PostHog/PostHogConsumerPayload.swift",
+  "PostHog/PostHogUploadInfo.swift",
+  "PostHog/QueueEndpoint.swift",
+  "PostHog/Models/PostHogEvent.swift",
+  "PostHog/PostHogVersion.swift",
+  "PostHog/Utils/DateUtils.swift",
+  "PostHog/Utils/DictUtils.swift",
+  "PostHog/Utils/FileUtils.swift",
+  "PostHog/Utils/Hedgelog.swift",
+  "PostHog/Utils/UUIDUtils.swift",
+  "PostHog/Utils/TimeBasedEpochGenerator.swift",
+  "PostHog/Utils/Reachability.swift",
+  "PostHog/Utils/PostHogMulticastCallback.swift",
+  "LakeOfFire/Sources/UpstreamAdapters.swift",
+  "LakeOfFire/Sources/PostHogEventsConfiguration.swift",
+  "LakeOfFire/Sources/PostHogEventsTransport.swift",
+  "LakeOfFire/Sources/PostHogEventsClient.swift"
+]

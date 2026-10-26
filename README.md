@@ -1,3 +1,7 @@
+> **lake-of-fire capture-only fork:** use the `PostHogEvents` SwiftPM product.
+> See [package boundary, usage, validation and upstream updates](LakeOfFire/README.md).
+> The upstream documentation below describes the full SDK, which this fork does not build.
+
 [![Build](https://img.shields.io/github/actions/workflow/status/PostHog/posthog-ios/build.yml?branch=main)](https://github.com/PostHog/posthog-ios/actions/workflows/build.yml?query=branch%3Amain)
 [![CocoaPods compadible](https://img.shields.io/cocoapods/v/PostHog.svg)](https://cocoapods.org/pods/PostHog)
 [![SwiftPM compatible](https://img.shields.io/badge/spm-compatible-brightgreen.svg?style=flat)](https://swift.org/package-manager)
