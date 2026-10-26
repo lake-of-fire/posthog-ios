@@ -111,6 +111,12 @@ targets, dependencies, new imported frameworks, or dynamic selector/class
 lookup in admitted source. It supplements review; it is not an Apple approval
 guarantee.
 
+The generated manifests contain literal paths and perform no filesystem reads.
+This supports Tuist/SwiftPM evaluators that load manifest text without the
+original `#filePath`. Regenerate after merging upstream so the exclusion list
+also accounts for new repository inputs; new source files remain unadmitted
+until deliberately added to `package-sources.json`.
+
 ## Upstream specification scope
 
 This subset follows the wire shape and retained queue behavior described in
