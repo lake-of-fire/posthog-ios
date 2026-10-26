@@ -1801,14 +1801,16 @@
         /// The masks under a portal's source where it sits and, for a portal that shows it elsewhere, there too: moved
         /// with the map its pixels were placed with, or the whole portal when that map is missing or a `postHogMask()`
         /// reporter sits under the source. A reporter under the source that hasn't been laid out masks all of it
-        /// instead of skipping the frame: under an ancestor that hides it, it may never be laid out.
+        /// instead of skipping the frame: under an ancestor that hides it, it may never be laid out. Whole-source and
+        /// whole-portal regions are outset so the rect pass's rounded corners still cover them.
         private func maskedRegions(shownThrough source: PostHogPortalSource, in window: UIWindow, reporters: [MaskedRegion],
                                    hasUnsettledReporter: Bool) -> [MaskedRegion]
         {
             var regions: [MaskedRegion] = []
             findMaskableWidgets(under: source.view, in: window, &regions, [])
+            let corner = RRWireframe.maskCornerRadius
             if hasUnsettledReporter {
-                regions.append(MaskedRegion(source.view, rect: source.view.toPresentationRect(window), inline: .rectOnly))
+                regions.append(MaskedRegion(source.view, rect: source.view.toPresentationRect(window).insetBy(dx: -corner, dy: -corner), inline: .rectOnly))
             }
             guard let elsewhere = source.elsewhere else { return regions }
             let hasReporter = hasUnsettledReporter || reporters.contains { ($0.object as? UIView)?.isDescendant(of: source.view) == true }
@@ -1816,7 +1818,7 @@
                 return regions + regions.map { MaskedRegion($0.object, rect: $0.rect.applying(map)) }
             }
             if hasReporter || !regions.isEmpty {
-                regions.append(MaskedRegion(source.view, rect: elsewhere.portalRect, inline: .rectOnly))
+                regions.append(MaskedRegion(source.view, rect: elsewhere.portalRect.insetBy(dx: -corner, dy: -corner), inline: .rectOnly))
             }
             return regions
         }

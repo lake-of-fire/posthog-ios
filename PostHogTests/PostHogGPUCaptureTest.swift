@@ -675,6 +675,13 @@
 
         /// A portal that shows its source at its own position, as SwiftUI's glass shows its text: the source's bounds
         /// land on the portal's.
+        /// The rect a whole-portal mask covers: the portal outset by the rect pass's corner radius, so its rounded corners
+        /// still cover the portal's.
+        private func wholePortalRect(_ portal: CALayer, in window: UIWindow) -> CGRect {
+            let corner = RRWireframe.maskCornerRadius
+            return window.layer.convert(portal.bounds, from: portal).insetBy(dx: -corner, dy: -corner)
+        }
+
         private func makeLensPortal(showing source: UIView, frame: CGRect) throws -> CALayer {
             try makePortal(showing: source.layer, frame: frame, matchesPosition: false, matchesTransform: false)
         }
@@ -744,7 +751,7 @@
             window.layer.addSublayer(portal)
 
             let (_, rects) = try await render(window, with: mirror)
-            #expect(rects.contains(window.layer.convert(portal.bounds, from: portal)))
+            #expect(rects.contains(wholePortalRect(portal, in: window)))
         }
 
         @Test("A lens portal whose placement isn't affine masks the whole portal when its source has masks")
@@ -764,7 +771,7 @@
             window.layer.addSublayer(portal)
 
             let (image, rects) = try await render(window, with: mirror)
-            #expect(rects.contains(window.layer.convert(portal.bounds, from: portal)))
+            #expect(rects.contains(wholePortalRect(portal, in: window)))
             #expect(try maskedPixels(image, rects).points(where: Self.isMagenta).isEmpty)
         }
 
@@ -977,7 +984,8 @@
             defer { frame.release() }
             let rects = try #require(PostHogReplayIntegration().collectMaskableRects(in: window, culledLayers: frame.culledLayers,
                                                                                      portalSources: frame.portalSources))
-            #expect(rects.contains(lens ? window.layer.convert(portal.bounds, from: portal) : source.frame))
+            let corner = RRWireframe.maskCornerRadius
+            #expect(rects.contains(lens ? wholePortalRect(portal, in: window) : source.frame.insetBy(dx: -corner, dy: -corner)))
         }
 
         @Test("A huge Metal layer's placeholder bitmap is capped instead of sized to the layer")

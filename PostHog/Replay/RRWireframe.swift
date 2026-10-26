@@ -66,6 +66,9 @@ class RRWireframe {
             return (encoded, encoded.toBase64())
         }
 
+        /// The corner radius of every rect the rect pass paints.
+        static let maskCornerRadius: CGFloat = 10
+
         // Shared so tests can redact through the exact production path instead of reimplementing it.
         static func maskImage(_ image: UIImage, maskableWidgets: [CGRect], scale: CGFloat = 1) -> UIImage? {
             guard !maskableWidgets.isEmpty else { return nil }
@@ -79,7 +82,7 @@ class RRWireframe {
 
                     for rect in maskableWidgets {
                         UIColor.black.setFill()
-                        UIBezierPath(roundedRect: rect, cornerRadius: 10).fill()
+                        UIBezierPath(roundedRect: rect, cornerRadius: maskCornerRadius).fill()
                     }
                 }
             }
