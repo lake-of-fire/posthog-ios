@@ -60,6 +60,13 @@ public final class PostHogEventsClient: @unchecked Sendable {
         self.directoryOwnership = ownership
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let storage = PostHogStorage(directory: directory)
+            let queueDirectory = storage.url(forKey: .queue)
+            // The upstream queue logs setup failures instead of throwing. Surface
+            // an unusable queue here so callers can retry opening storage rather
+            // than retaining a client whose captures can never be persisted.
+            try FileManager.default.createDirectory(at: queueDirectory, withIntermediateDirectories: true)
+            _ = try FileManager.default.contentsOfDirectory(at: queueDirectory, includingPropertiesForKeys: nil)
             let identityURL = directory.appendingPathComponent("identity.json")
             let identity: Identity
             if FileManager.default.fileExists(atPath: identityURL.path) {
@@ -79,7 +86,6 @@ public final class PostHogEventsClient: @unchecked Sendable {
             var storageDirectory = directory
             try storageDirectory.setResourceValues(values)
             let config = PostHogConfig()
-            let storage = PostHogStorage(directory: directory)
             // Enforce a smaller configured capacity on restored files before
             // the upstream queue takes ownership of its in-memory index.
             _ = PostHogFileBackedQueue(queue: storage.url(forKey: .queue), maxSize: configuration.maxQueueSize)

@@ -26,6 +26,29 @@ struct PostHogEventsTests {
         #expect(throws: PostHogEventsError.self) { try PostHogEventsConfiguration(projectToken: "phc_test", storageDirectory: dir, flushInterval: .nan) }
     }
 
+    @Test func blockedQueueFailsOpenAndCanRecoverWithoutLosingTheObstruction() throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let config = try configuration(dir)
+        let queue = dir.appendingPathComponent("queue")
+        let obstruction = Data("preserve this file".utf8)
+        try obstruction.write(to: queue)
+
+        #expect(throws: (any Error).self) {
+            try PostHogEventsClient(configuration: config, send: { _, _ in })
+        }
+        #expect(try Data(contentsOf: queue) == obstruction)
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("identity.json").path))
+
+        // A failed initializer must release its ownership reservation, allowing
+        // the app's bounded retry to open the same directory after repair.
+        try FileManager.default.moveItem(at: queue, to: dir.appendingPathComponent("blocked-queue"))
+        let recovered = try PostHogEventsClient(configuration: config, send: { _, _ in })
+        #expect(recovered.capture("after_recovery"))
+        #expect(recovered.pendingEventCount == 1)
+        #expect(try persistedEvents(dir).first?["event"] as? String == "after_recovery")
+    }
+
     @Test func persistsIdentityAndQueuedUUIDAcrossReopen() throws {
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }

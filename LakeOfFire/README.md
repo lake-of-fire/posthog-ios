@@ -46,8 +46,11 @@ analytics.flush() // requests a batch; it does not synchronously wait for upload
 
 Keep one client alive for each storage directory. Use different directories
 for different tokens **and hosts**. The storage identity validates both; a
-mistaken reuse throws rather than uploading another project's queue. Multiple
-processes/app extensions must use separate directories. `close()` stops timers
+mistaken reuse throws rather than uploading another project's queue. Opening also
+throws if the queue directory cannot be created or enumerated; after the storage
+problem is repaired, opening the same directory can be retried. Capture-time disk
+write failures still return `false`. Multiple processes/app extensions must use
+separate directories. `close()` stops timers
 and uploads; the live instance continues to reserve its directory until deinit.
 Pending records remain on disk. For local withdrawal/deletion, call
 `try await analytics.closeAndDeleteStorage()` instead. It closes the delivery
