@@ -15,7 +15,7 @@ final class PostHogEventsTransport: @unchecked Sendable {
         session = URLSession(configuration: settings, delegate: PostHogEventsRedirectPolicy(), delegateQueue: nil)
     }
 
-    func send(_ events: [PostHogEvent], completion: @escaping (PostHogUploadInfo) -> Void) {
+    func send(_ events: [PostHogCapturedEvent], completion: @escaping (PostHogUploadInfo) -> Void) {
         guard let body = toJSONData(["api_key": configuration.projectToken, "batch": events.map { $0.toJSON() }]) else {
             completion(PostHogUploadInfo(statusCode: 400, error: nil))
             return

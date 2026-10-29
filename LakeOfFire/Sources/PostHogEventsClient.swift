@@ -1,6 +1,6 @@
 import Foundation
 
-/// Thread-safe explicit events with upstream's durable batching and retry queue.
+/// Thread-safe explicit events with a durable capture-only batching/retry queue.
 /// No screen/device inspection, remote configuration, or automatic events run.
 public final class PostHogEventsClient: @unchecked Sendable {
     private struct Identity: Codable {
@@ -12,7 +12,6 @@ public final class PostHogEventsClient: @unchecked Sendable {
     private static let ownershipLock = NSLock()
     private static var ownedDirectories = Set<URL>()
     private let stateLock = NSLock()
-    private let deliveryGate: PostHogEventsDeliveryGate
     private final class DirectoryOwnership {
         let directory: URL
         private var ownsDirectory = false
@@ -30,7 +29,7 @@ public final class PostHogEventsClient: @unchecked Sendable {
     private let directory: URL
     private let directoryOwnership: DirectoryOwnership
     private let queueLifetime = PostHogEventsQueueLifetime()
-    private var queue: PostHogQueue<PostHogEvent>?
+    private var queue: PostHogEventsQueue?
     private let transport: PostHogEventsTransport?
     private var closed = false
     private var sessionID = UUID.v7String()
@@ -49,20 +48,17 @@ public final class PostHogEventsClient: @unchecked Sendable {
 
     init(configuration: PostHogEventsConfiguration, transport: PostHogEventsTransport? = nil,
          clock: @escaping () -> Date = Date.init, startTimer: Bool = false,
-         send: @escaping ([PostHogEvent], @escaping (PostHogUploadInfo) -> Void) -> Void) throws {
+         send: @escaping ([PostHogCapturedEvent], @escaping (PostHogUploadInfo) -> Void) -> Void) throws {
         let directory = configuration.storageDirectory
         self.directory = directory
         self.transport = transport
         self.clock = clock
-        let gate = PostHogEventsDeliveryGate()
-        self.deliveryGate = gate
         let ownership = try DirectoryOwnership(directory)
         self.directoryOwnership = ownership
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let storage = PostHogStorage(directory: directory)
-            let queueDirectory = storage.url(forKey: .queue)
-            // The upstream queue logs setup failures instead of throwing. Surface
+            let queueDirectory = directory.appendingPathComponent("queue", isDirectory: true)
+            // The upstream FIFO logs setup failures instead of throwing. Surface
             // an unusable queue here so callers can retry opening storage rather
             // than retaining a client whose captures can never be persisted.
             try FileManager.default.createDirectory(at: queueDirectory, withIntermediateDirectories: true)
@@ -85,25 +81,7 @@ public final class PostHogEventsClient: @unchecked Sendable {
             values.isExcludedFromBackup = true
             var storageDirectory = directory
             try storageDirectory.setResourceValues(values)
-            let config = PostHogConfig()
-            // Enforce a smaller configured capacity on restored files before
-            // the upstream queue takes ownership of its in-memory index.
-            _ = PostHogFileBackedQueue(queue: storage.url(forKey: .queue), maxSize: configuration.maxQueueSize)
-            let endpoint = QueueEndpoint<PostHogEvent>(
-                storageKey: .queue, oldStorageKeys: [], dispatchQueueLabel: "com.lake-of-fire.PostHogEvents",
-                initialCap: { _ in configuration.maxBatchSize }, initialFlushAt: { _ in configuration.flushAt },
-                maxQueueSize: { _ in configuration.maxQueueSize }, flushIntervalSeconds: { _ in configuration.flushInterval },
-                rateCapMax: { _ in 0 }, rateCapWindowSeconds: { _ in 0 },
-                encode: { toJSONData($0.toJSON()) }, decode: { PostHogEvent.fromJSON($0) }, describe: { _ in "event" },
-                send: { records, completion in
-                    gate.send(records, using: send, completion: completion)
-                }, isRetriableStatusCode: { $0 == 408 || $0 == 429 || (500...599).contains($0) || (300...399).contains($0) }
-            )
-#if os(watchOS)
-            let queue = PostHogEventsQueue(config, storage, endpoint)
-#else
-            let queue = PostHogEventsQueue(config, storage, endpoint, nil)
-#endif
+            let queue = PostHogEventsQueue(configuration: configuration, directory: queueDirectory, send: send)
             let lifetime = queueLifetime
             queue.onDeinit = {
                 // Retain directory ownership until all queue work is gone, even
@@ -111,8 +89,7 @@ public final class PostHogEventsClient: @unchecked Sendable {
                 withExtendedLifetime(ownership) { lifetime.finish() }
             }
             self.queue = queue
-            // URLSession errors drive retry. No reachability observer or background task is installed.
-            queue.start(disableReachabilityForTesting: true, disableQueueTimerForTesting: !startTimer)
+            if startTimer { queue.start() }
         } catch {
             throw error
         }
@@ -136,9 +113,9 @@ public final class PostHogEventsClient: @unchecked Sendable {
             properties["$session_id"] = sessionID
             properties["$lib"] = "posthog-ios-events"
             properties["$lib_version"] = postHogVersion
-            let record = PostHogEvent(event: event, distinctId: anonymousID, properties: properties, timestamp: date)
+            let record = PostHogCapturedEvent(event: event, distinctId: anonymousID, properties: properties, timestamp: date)
             guard let data = toJSONData(record.toJSON()), data.count <= 16_384,
-                  let frozen = PostHogEvent.fromJSON(data) else { return false }
+                  let frozen = PostHogCapturedEvent.fromJSON(data) else { return false }
             return queue?.add(frozen) ?? false
         }
     }
@@ -152,7 +129,6 @@ public final class PostHogEventsClient: @unchecked Sendable {
         stateLock.withLock {
             guard !closed else { return }
             closed = true
-            deliveryGate.close()
             queue?.stop()
             transport?.close()
         }
@@ -164,8 +140,8 @@ public final class PostHogEventsClient: @unchecked Sendable {
     public func closeAndDeleteStorage() async throws {
         close()
         stateLock.withLock { queue = nil }
-        // Queued flush closures retain the old queue until their disk reads
-        // finish. Its destruction joins that work without changing upstream.
+        // Running worker closures retain the old queue until disk work ends.
+        // Weak queued closures cannot begin work after its destruction.
         await queueLifetime.wait()
         try Self.deleteDirectoryIfPresent(directory)
     }
@@ -186,7 +162,6 @@ public final class PostHogEventsClient: @unchecked Sendable {
     }
 
     deinit {
-        deliveryGate.close()
         queue?.stop()
         transport?.close()
     }

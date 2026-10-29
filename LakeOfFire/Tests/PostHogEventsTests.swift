@@ -132,6 +132,151 @@ struct PostHogEventsTests {
         #expect(try persistedEvents(dir).count == 20)
     }
 
+    @Test func captureFreezesMutablePropertiesBeforeReturning() throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let client = try PostHogEventsClient(configuration: configuration(dir), send: { _, _ in })
+        let nested = NSMutableDictionary(dictionary: ["chapter": 1])
+        #expect(client.capture("opened", properties: ["nested": nested]))
+        nested["chapter"] = 2
+        let properties = try #require(persistedEvents(dir).first?["properties"] as? [String: Any])
+        #expect((properties["nested"] as? [String: Any])?["chapter"] as? Int == 1)
+    }
+
+    @Test func malformedStoredEntriesAreSkippedWithoutLosingValidEvents() async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let queueDir = dir.appendingPathComponent("queue", isDirectory: true)
+        try FileManager.default.createDirectory(at: queueDir, withIntermediateDirectories: true)
+        let storage = PostHogFileBackedQueue(queue: queueDir)
+        let valid = PostHogCapturedEvent(event: "survivor", distinctId: UUID().uuidString, properties: ["chapter": 7])
+        #expect(storage.add(Data("broken JSON".utf8)).success)
+        #expect(storage.add(try #require(toJSONData(valid.toJSON()))).success)
+        #expect(storage.add(Data("{\"event\":\"missing_envelope\"}".utf8)).success)
+        let sent = SentBatches()
+        let client = try PostHogEventsClient(configuration: configuration(dir), send: { sent.append($0, $1) })
+        #expect(client.pendingEventCount == 3)
+        client.flush()
+        try await wait { sent.count == 1 }
+        #expect(sent.uuids(0) == [valid.uuid.uuidString])
+        sent.complete(0, status: 200)
+        try await wait { client.pendingEventCount == 0 }
+        #expect(try persistedEvents(dir).isEmpty)
+    }
+
+    @Test func entirelyMalformedStorageIsClearedWithoutAnUpload() async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let queueDir = dir.appendingPathComponent("queue", isDirectory: true)
+        try FileManager.default.createDirectory(at: queueDir, withIntermediateDirectories: true)
+        let storage = PostHogFileBackedQueue(queue: queueDir)
+        #expect(storage.add(Data("null".utf8)).success)
+        let sent = SentBatches()
+        let client = try PostHogEventsClient(configuration: configuration(dir), send: { sent.append($0, $1) })
+        client.flush()
+        try await wait { client.pendingEventCount == 0 }
+        #expect(sent.count == 0)
+    }
+
+    @Test func acknowledgementKeepsIdenticalReplacementPayloadsAtCapacity() async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sent = SentBatches()
+        let queue = PostHogEventsQueue(configuration: try configuration(dir, capacity: 3, batch: 3), directory: dir,
+                                      send: { sent.append($0, $1) })
+        defer { queue.stop() }
+        let record = PostHogCapturedEvent(event: "identical", distinctId: UUID().uuidString)
+        for _ in 0..<3 { #expect(queue.add(record)) }
+        try await wait { sent.count == 1 }
+        // Even event UUID and payload are identical; storage-entry identities
+        // alone distinguish the replacement files from the in-flight batch.
+        for _ in 0..<3 { #expect(queue.add(record)) }
+        sent.complete(0, status: 200)
+        try await wait { queue.flush(); return sent.count == 2 }
+        #expect(queue.depth == 3)
+        #expect(sent.uuids(1) == sent.uuids(0))
+        sent.complete(1, status: 200)
+        try await wait { queue.depth == 0 }
+    }
+
+    @Test(arguments: [503, -1])
+    func timerRetriesHTTPAndTransportFailuresWithoutExplicitFlush(status: Int) async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let config = try PostHogEventsConfiguration(projectToken: "phc_test", host: URL(string: "https://events.example.test")!,
+                                                   storageDirectory: dir, flushAt: 50, flushInterval: 0.02)
+        let sent = SentBatches()
+        let client = try PostHogEventsClient(configuration: config, startTimer: true, send: { sent.append($0, $1) })
+        defer { client.close() }
+        #expect(client.capture("timer_retry"))
+        try await wait { sent.count == 1 }
+        let firstIDs = sent.uuids(0)
+        sent.complete(0, result: PostHogUploadInfo(statusCode: status == -1 ? nil : status,
+                                                error: status == -1 ? URLError(.notConnectedToInternet) : nil,
+                                                retryAfter: 1.25))
+        try await Task.sleep(nanoseconds: 1_050_000_000)
+        #expect(sent.count == 1)
+        #expect(client.pendingEventCount == 1)
+        try await wait { sent.count == 2 }
+        #expect(sent.uuids(1) == firstIDs)
+        sent.complete(1, status: 200)
+        try await wait { client.pendingEventCount == 0 }
+        #expect(try persistedEvents(dir).isEmpty)
+    }
+
+    @Test func stopBeforeStartPreservesStorageAndCannotRestart() async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sent = SentBatches()
+        let config = try PostHogEventsConfiguration(projectToken: "phc_test", storageDirectory: dir, flushInterval: 0.05)
+        let queue = PostHogEventsQueue(configuration: config, directory: dir, send: { sent.append($0, $1) })
+        #expect(queue.add(PostHogCapturedEvent(event: "offline", distinctId: UUID().uuidString)))
+        queue.stop()
+        queue.start()
+        queue.start()
+        queue.flush()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        #expect(sent.count == 0)
+        #expect(queue.depth == 1)
+        #expect(!queue.add(PostHogCapturedEvent(event: "closed", distinctId: UUID().uuidString)))
+    }
+
+    @Test func closePreservesInFlightStorageAndRejectsLateSuccess() async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let config = try PostHogEventsConfiguration(projectToken: "phc_test", storageDirectory: dir, flushInterval: 0.02)
+        let sent = SentBatches()
+        let client = try PostHogEventsClient(configuration: config, startTimer: true, send: { sent.append($0, $1) })
+        #expect(client.capture("before_close"))
+        try await wait { sent.count == 1 }
+        let before = try persistedEvents(dir)
+        client.close()
+        sent.complete(0, status: 200)
+        client.flush()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(sent.count == 1)
+        #expect(client.pendingEventCount == 1)
+        #expect(try persistedEvents(dir).first?["uuid"] as? String == before.first?["uuid"] as? String)
+        #expect(!client.capture("after_close"))
+    }
+
+    @Test(arguments: [400, 413])
+    func terminalSingletonRemovesOnlyItsOwnEntry(status: Int) async throws {
+        let dir = try directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sent = SentBatches()
+        let client = try PostHogEventsClient(configuration: configuration(dir, batch: 1), send: { sent.append($0, $1) })
+        #expect(client.capture("terminal"))
+        try await wait { sent.count == 1 }
+        #expect(client.capture("later"))
+        sent.complete(0, status: status)
+        try await wait { client.flush(); return sent.count == 2 }
+        #expect(sent.uuids(1) != sent.uuids(0))
+        #expect(client.pendingEventCount == 1)
+        sent.complete(1, status: 200)
+        try await wait { client.pendingEventCount == 0 }
+    }
+
     @Test func retryRetainsExactEventsUntilAcknowledged() async throws {
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -180,7 +325,8 @@ struct PostHogEventsTests {
         let dir = try directory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let sent = SentBatches()
-        var client: PostHogEventsClient? = try PostHogEventsClient(configuration: configuration(dir), send: { events, completion in sent.append(events, completion) })
+        let config = try PostHogEventsConfiguration(projectToken: "phc_test", storageDirectory: dir, flushInterval: 0.02)
+        var client: PostHogEventsClient? = try PostHogEventsClient(configuration: config, startTimer: true, send: { events, completion in sent.append(events, completion) })
         let oldID = client!.anonymousID
         #expect(client!.capture("before_withdrawal"))
         client!.flush()
@@ -191,7 +337,7 @@ struct PostHogEventsTests {
         #expect(!client!.capture("after_withdrawal"))
         let count = sent.count
         sent.complete(0, status: 200)
-        try await Task.sleep(nanoseconds: 30_000_000)
+        try await Task.sleep(nanoseconds: 100_000_000)
         #expect(sent.count == count)
         #expect(!FileManager.default.fileExists(atPath: dir.path))
         client = nil
@@ -265,12 +411,15 @@ private final class SentBatches: @unchecked Sendable {
     private let lock = NSLock()
     private var batches = [([String], (PostHogUploadInfo) -> Void)]()
     var count: Int { lock.withLock { batches.count } }
-    func append(_ events: [PostHogEvent], _ completion: @escaping (PostHogUploadInfo) -> Void) {
+    func append(_ events: [PostHogCapturedEvent], _ completion: @escaping (PostHogUploadInfo) -> Void) {
         lock.withLock { batches.append((events.map { $0.uuid.uuidString }, completion)) }
     }
     func uuids(_ index: Int) -> [String] { lock.withLock { batches[index].0 } }
     func complete(_ index: Int, status: Int) {
+        complete(index, result: PostHogUploadInfo(statusCode: status, error: nil))
+    }
+    func complete(_ index: Int, result: PostHogUploadInfo) {
         let completion = lock.withLock { batches[index].1 }
-        completion(PostHogUploadInfo(statusCode: status, error: nil))
+        completion(result)
     }
 }

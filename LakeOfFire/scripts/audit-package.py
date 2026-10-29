@@ -17,7 +17,7 @@ assert set(core["sources"]) == expected, (set(core["sources"]) - expected, expec
 assert not core.get("target_dependencies") and not core.get("product_dependencies"), core
 assert not graph.get("dependencies"), graph.get("dependencies")
 assert core["type"] == "library", core["type"]
-allowed_imports = {"Foundation", "CoreGraphics", "SystemConfiguration", "Security"}
+allowed_imports = {"Foundation", "CoreGraphics", "Security"}
 for relative in expected:
     source = (root / relative).read_text()
     modules = set(re.findall(r"^\s*import\s+(\w+)", source, re.MULTILINE))
