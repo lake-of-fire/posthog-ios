@@ -89,7 +89,13 @@ public final class PostHogEventsClient: @unchecked Sendable {
                 withExtendedLifetime(ownership) { lifetime.finish() }
             }
             self.queue = queue
+            #if DEBUG
             if startTimer { queue.start() }
+            #else
+            // Distributed clients always schedule delivery. Only local tests
+            // may suppress the timer while exercising explicit queue steps.
+            queue.start()
+            #endif
         } catch {
             throw error
         }
